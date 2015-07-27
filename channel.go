@@ -12,9 +12,12 @@ type channelPool struct {
 	// storage for our net.Conn connections
 	mu    sync.Mutex
 	conns chan net.Conn
-
 	// net.Conn generator
 	connPool ConnPool
+	//had created pool num
+	hadCreatedPool int
+	//create max pool num
+	maxPoolNum int
 }
 
 // Factory is a function to create new connections.
@@ -32,8 +35,10 @@ func NewChannelPool(initialCap, maxCap int, connPool ConnPool) (Pool, error) {
 	}
 
 	c := &channelPool{
-		conns:    make(chan net.Conn, maxCap),
-		connPool: connPool,
+		conns:          make(chan net.Conn, maxCap),
+		connPool:       connPool,
+		hadCreatedPool: initialCap,
+		maxPoolNum:     maxCap,
 	}
 
 	// create initial connections, if something goes wrong,
@@ -68,6 +73,7 @@ func (c *channelPool) Get() (net.Conn, error) {
 
 	// wrap our connections with out custom net.Conn implementation (wrapConn
 	// method) that puts the connection back to the pool if it's closed.
+	// if pool num gt max pool, it can not be created any more
 	select {
 	case conn := <-conns:
 		if conn == nil {
@@ -76,12 +82,16 @@ func (c *channelPool) Get() (net.Conn, error) {
 
 		return c.wrapConn(conn), nil
 	default:
-		conn, err := c.connPool()
-		if err != nil {
-			return nil, err
+		if c.hadCreatedPool <= c.maxPoolNum {
+			conn, err := c.connPool()
+			if err != nil {
+				return nil, err
+			}
+			c.hadCreatedPool += 1
+			return c.wrapConn(conn), nil
+		} else {
+			return nil, ErrMax
 		}
-
-		return c.wrapConn(conn), nil
 	}
 }
 

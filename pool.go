@@ -9,6 +9,8 @@ import (
 var (
 	// ErrClosed is the error resulting if the pool is closed via pool.Close().
 	ErrClosed = errors.New("current connect pool is closed")
+	//ErrMax is the error resulting if the pool is max
+	ErrMax = errors.New("pool num is max, can not be created any more.")
 )
 
 // Pool interface describes a pool implementation. A pool should have maximum
