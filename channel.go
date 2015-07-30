@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"time"
 )
 
 // channelPool implements the Pool interface based on buffered channels.
@@ -18,6 +19,12 @@ type channelPool struct {
 	hadCreatedPool int
 	//create max pool num
 	maxPoolNum int
+	//create min pool num
+	minPoolNum int
+	//check num
+	checkTotal int
+	//in active conn num
+	activeNum int
 }
 
 // Factory is a function to create new connections.
@@ -37,8 +44,11 @@ func NewChannelPool(initialCap, maxCap int, connPool ConnPool) (Pool, error) {
 	c := &channelPool{
 		conns:          make(chan net.Conn, maxCap),
 		connPool:       connPool,
-		hadCreatedPool: initialCap,
+		hadCreatedPool: 0,
 		maxPoolNum:     maxCap,
+		minPoolNum:     initialCap,
+		checkTotal:     0,
+		activeNum:      0,
 	}
 
 	// create initial connections, if something goes wrong,
@@ -52,7 +62,38 @@ func NewChannelPool(initialCap, maxCap int, connPool ConnPool) (Pool, error) {
 		c.conns <- conn
 	}
 
+	//if all the thing is reay,  start the routine of check and compress
+	go c.checkAndCompress()
 	return c, nil
+}
+
+// 5 time/min execute clear pool num
+func (c *channelPool) checkAndCompress() {
+	tick := time.Tick(30 * time.Second)
+	for {
+		select {
+		case <-tick:
+			func() {
+				//if had created pool num gt initCap  num , then check time + 1
+				if c.hadCreatedPool > 0 {
+					c.checkTotal += 1
+					//if check times gt 10, then decrease pool num
+					if c.checkTotal > 10 {
+						conns := c.getConns()
+						closeNum := 0
+						for closeNum < c.hadCreatedPool {
+							conn := <-conns
+							conn.Close()
+							closeNum += 1
+						}
+						//reinit value
+						c.checkTotal = 0
+						c.hadCreatedPool = 0
+					}
+				}
+			}()
+		}
+	}
 }
 
 func (c *channelPool) getConns() chan net.Conn {
@@ -79,15 +120,16 @@ func (c *channelPool) Get() (net.Conn, error) {
 		if conn == nil {
 			return nil, ErrClosed
 		}
-
+		c.activeNum += 1
 		return c.wrapConn(conn), nil
 	default:
-		if c.hadCreatedPool <= c.maxPoolNum {
+		if c.hadCreatedPool+c.minPoolNum <= c.maxPoolNum {
 			conn, err := c.connPool()
 			if err != nil {
 				return nil, err
 			}
 			c.hadCreatedPool += 1
+			c.activeNum += 1
 			return c.wrapConn(conn), nil
 		} else {
 			return nil, ErrMax
@@ -114,9 +156,11 @@ func (c *channelPool) put(conn net.Conn) error {
 	// block and the default case will be executed.
 	select {
 	case c.conns <- conn:
+		c.activeNum -= 1
 		return nil
 	default:
 		// pool is full, close passed connection
+		c.activeNum -= 1
 		return conn.Close()
 	}
 }
